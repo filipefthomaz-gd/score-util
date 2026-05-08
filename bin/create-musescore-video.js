@@ -14,7 +14,18 @@ function getArgs() {
 			allowPositionals: true,
 			options: {
 				audio: {
+					type: 'boolean',
+					default: false
+				},
+				'audio-channels': {
 					type: 'string'
+				},
+				'audio-output': {
+					type: 'string'
+				},
+				'audio-offset': {
+					type: 'string',
+					default: '0'
 				},
 				ffmpeg: {
 					type: 'string',
@@ -80,36 +91,41 @@ if (args.values.help || args.positionals.length !== 2) {
 	console.log(`Usage: create-musescore-video [options] input.mscz output.mp4
 
 Options:
- -h,--help          show help text
- -v,--version       show version
- --ffmpeg=FILE      path to ffmpeg executable
- --mscore=FILE      path to MuseScore (mscore) executable
- --audio=channels   audio channel volumes in format 'track1=volume1,track2=volume2...'
- --fps=NUMBER       frames per second (default: 60)
- --width=NUMBER     output width in pixels, height auto-scaled
- --start=SECONDS    start time in seconds (e.g. --start=30)
- --end=SECONDS      end time in seconds (e.g. --end=90)
- --dual-page        show current page and next page side by side
- --top-offset=N     shift vertical crop by N SVG units (positive=down, negative=up/show title)
+ -h,--help                show help text
+ -v,--version             show version
+ --ffmpeg=FILE            path to ffmpeg executable
+ --mscore=FILE            path to MuseScore (mscore) executable
+ --audio                  include audio in the video (default mix)
+ --audio-channels=SPEC    per-channel volumes: 'track1=volume1,track2=volume2...' (implies --audio)
+ --audio-output=FILE      save exported audio to FILE (e.g. output.wav) (implies --audio)
+ --audio-offset=MS        shift audio earlier by MS milliseconds (e.g. --audio-offset=40)
+ --fps=NUMBER             frames per second (default: 60)
+ --width=NUMBER           output width in pixels, height auto-scaled
+ --start=SECONDS          start time in seconds (e.g. --start=30)
+ --end=SECONDS            end time in seconds (e.g. --end=90)
+ --dual-page              show current page and next page side by side
+ --top-offset=N           shift vertical crop by N SVG units (positive=down, negative=up/show title)
 `);
 
 	process.exit(args.values.help ? 0 : 1);
 }
 
 /** @type {Record<string, number> | undefined} */
-let audio;
+let audioChannels;
 
-if (args.values.audio != null) {
-	const channels = parseChannels(args.values.audio);
+if (args.values['audio-channels'] != null) {
+	const channels = parseChannels(args.values['audio-channels']);
 
 	if (channels.every(channel => channel != null)) {
-		audio = Object.fromEntries(channels);
+		audioChannels = Object.fromEntries(channels);
 	} else {
-		console.error('Invalid audio specifier: ', args.values.audio);
+		console.error('Invalid audio-channels specifier: ', args.values['audio-channels']);
 
 		process.exit(1);
 	}
 }
+
+const includeAudio = args.values.audio || audioChannels != null || args.values['audio-output'] != null;
 
 const [musescoreFile, videoFile] = args.positionals;
 
@@ -118,13 +134,15 @@ console.log('Reconfiguring score %s for export', chalk.bold(musescoreFile));
 const temporaryPrefix = await tmpfile();
 const temporaryScoreFile = `${temporaryPrefix}.mscz`;
 
-await modifyScore(musescoreFile, temporaryScoreFile, audio ?? {}, { dualPage: args.values['dual-page'] });
+await modifyScore(musescoreFile, temporaryScoreFile, audioChannels ?? {}, { dualPage: args.values['dual-page'] });
 
 console.log('Loading score media for %s', chalk.bold(temporaryScoreFile));
 
+const audioOutputFile = args.values['audio-output'] ?? (includeAudio ? `${temporaryPrefix}.wav` : undefined);
+
 const [mediaInfo, audioFile] = await Promise.all([
 	scoreMedia(temporaryScoreFile, { mscore: args.values.mscore }),
-	audio != null ? createAudio(temporaryScoreFile, `${temporaryPrefix}.wav`, { mscore: args.values.mscore }) : undefined
+	audioOutputFile != null ? createAudio(temporaryScoreFile, audioOutputFile, { mscore: args.values.mscore }) : undefined
 ]);
 
 console.log('Creating video %s', chalk.bold(videoFile));
@@ -136,5 +154,6 @@ await createVideo(mediaInfo, audioFile, videoFile, {
 	startMs: args.values.start != null ? Number(args.values.start) * 1000 : undefined,
 	endMs: args.values.end != null ? Number(args.values.end) * 1000 : undefined,
 	dualPage: args.values['dual-page'],
-	topOffset: Number(args.values['top-offset'])
+	topOffset: Number(args.values['top-offset']),
+	audioOffsetMs: Number(args.values['audio-offset'])
 });
